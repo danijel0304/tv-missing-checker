@@ -32,14 +32,99 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
 
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2 wget
+
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TV-Missing-Checker app.py
+
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          mkdir -p packages
+          case "$GITHUB_REF_NAME" in
+            v*) VERSION="${GITHUB_REF_NAME#v}" ;;
+            *) VERSION="0.0.0-${GITHUB_RUN_NUMBER}" ;;
+          esac
+
+          tar -czf packages/TV-Missing-Checker-linux-x86_64.tar.gz -C dist TV-Missing-Checker
+
+          mkdir -p package/DEBIAN package/usr/bin package/usr/share/applications
+          cp dist/TV-Missing-Checker package/usr/bin/tv-missing-checker
+          chmod +x package/usr/bin/tv-missing-checker
+
+          cat > package/DEBIAN/control <<EOF
+          Package: tv-missing-checker
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Danijel
+          Description: Desktop tool for checking missing TV episodes
+          EOF
+          sed -i 's/^          //' package/DEBIAN/control
+
+          cat > package/usr/share/applications/tv-missing-checker.desktop <<EOF
+          [Desktop Entry]
+          Name=TV Missing Checker
+          Exec=tv-missing-checker
+          Terminal=false
+          Type=Application
+          Categories=Utility;AudioVideo;
+          EOF
+          sed -i 's/^          //' package/usr/share/applications/tv-missing-checker.desktop
+
+          dpkg-deb --build package packages/tv-missing-checker_${VERSION}_amd64.deb
+
+      - name: Build Linux AppImage
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -e
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/scalable/apps packages
+          cp dist/TV-Missing-Checker AppDir/usr/bin/tv-missing-checker
+          chmod +x AppDir/usr/bin/tv-missing-checker
+
+          cat > AppDir/AppRun <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/tv-missing-checker" "$@"
+          EOF
+          sed -i 's/^          //' AppDir/AppRun
+          chmod +x AppDir/AppRun
+
+          cat > AppDir/tv-missing-checker.desktop <<'EOF'
+          [Desktop Entry]
+          Name=TV Missing Checker
+          Exec=tv-missing-checker
+          Icon=tv-missing-checker
+          Terminal=false
+          Type=Application
+          Categories=Utility;AudioVideo;
+          EOF
+          sed -i 's/^          //' AppDir/tv-missing-checker.desktop
+
+          cat > AppDir/usr/share/icons/hicolor/scalable/apps/tv-missing-checker.svg <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="#1d4ed8"/><path fill="#fff" d="M48 72h160v96H48z"/><path fill="#1d4ed8" d="M80 100h48v16H80zm0 28h96v16H80z"/></svg>
+          EOF
+          sed -i 's/^          //' AppDir/usr/share/icons/hicolor/scalable/apps/tv-missing-checker.svg
+          cp AppDir/usr/share/icons/hicolor/scalable/apps/tv-missing-checker.svg AppDir/tv-missing-checker.svg
+
+          wget -O appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool.AppImage AppDir packages/TV-Missing-Checker-x86_64.AppImage
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: TV-Missing-Checker-${{ runner.os }}
-          path: dist/*
+          path: |
+            dist/*
+            packages/*
 
   release:
     name: Publish GitHub release
