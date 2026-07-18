@@ -6,6 +6,12 @@ collection.
 The app is bilingual. English is the default language, and Croatian can be
 selected from the language menu in the app.
 
+## Screenshot
+
+### Main window
+
+![Main window](docs/screenshots/main-window.png)
+
 ## What It Does
 
 - scans a selected folder and its subfolders
