@@ -64,6 +64,11 @@ DEFAULT_TVDB_API_KEY = (
 )
 TVDB_TOKEN_TTL_DAYS = 7
 DEFAULT_LANGUAGE = "en"
+APP_VERSION = "1.0.2"
+GITHUB_REPO = "danijel0304/tv-missing-checker"
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+PAYPAL_DONATE_URL = "https://www.paypal.com/paypalme/danijel0304"
 LANGUAGE_CHOICES = (("en", "English"), ("hr", "Hrvatski"))
 LANGUAGE_LABEL_BY_CODE = dict(LANGUAGE_CHOICES)
 LANGUAGE_CODE_BY_LABEL = {label: code for code, label in LANGUAGE_CHOICES}
@@ -72,7 +77,19 @@ TRANSLATIONS = {
     "en": {
         "app_title": "TV Missing Checker",
         "subtitle": "Check local seasons, missing episodes, and manual matches.",
+        "version_label": "Version {version}",
         "language": "Language",
+        "check_updates": "Update",
+        "donate": "Donate",
+        "checking_updates": "Checking updates...",
+        "update_available_title": "Update available",
+        "update_available_msg": "A new TV Missing Checker version is available.\n\nCurrent version: {current}\nNew version: {latest}\n\nOpen the download page?",
+        "update_current_title": "Up to date",
+        "update_current_msg": "You are using the latest version ({current}).",
+        "update_failed_title": "Update check failed",
+        "update_failed_msg": "I could not check for a new version. Check the internet connection and try again.",
+        "update_in_progress_title": "Check in progress",
+        "update_in_progress_msg": "The update check is already running.",
         "library": "Library",
         "main_folder": "Main TV series folder",
         "choose_folder": "Browse",
@@ -261,7 +278,19 @@ TRANSLATIONS = {
     "hr": {
         "app_title": "TV Missing Checker",
         "subtitle": "Provjera lokalnih sezona, missing epizoda i ručni match.",
+        "version_label": "Verzija {version}",
         "language": "Jezik",
+        "check_updates": "Update",
+        "donate": "Donacija",
+        "checking_updates": "Provjeravam update...",
+        "update_available_title": "Dostupna je nova verzija",
+        "update_available_msg": "Dostupna je nova verzija programa TV Missing Checker.\n\nTrenutna verzija: {current}\nNova verzija: {latest}\n\nOtvoriti stranicu za preuzimanje?",
+        "update_current_title": "Program je ažuran",
+        "update_current_msg": "Koristite najnoviju verziju programa ({current}).",
+        "update_failed_title": "Provjera nije uspjela",
+        "update_failed_msg": "Nisam uspio provjeriti novu verziju. Provjerite internet vezu i pokušajte ponovno.",
+        "update_in_progress_title": "Provjera je u tijeku",
+        "update_in_progress_msg": "Provjera nove verzije već je pokrenuta.",
         "library": "Biblioteka",
         "main_folder": "Glavni folder sa serijama",
         "choose_folder": "Odaberi folder",
@@ -2179,14 +2208,14 @@ def save_config(data: dict):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("TV Missing Episodes Checker")
+        self.title(f"TV Missing Checker v{APP_VERSION}")
         self.geometry("1620x960")
         self.minsize(1280, 760)
         self.configure(bg="#0a0f1c")
 
         cfg = load_config()
         self.language = normalize_language(cfg.get("language", DEFAULT_LANGUAGE))
-        self.title(self.tr("app_title"))
+        self.title(f"{self.tr('app_title')} v{APP_VERSION}")
         self.language_var = tk.StringVar(value=LANGUAGE_LABEL_BY_CODE.get(self.language, "English"))
         self.folder_var = tk.StringVar(value=cfg.get("last_folder", ""))
         self.filter_var = tk.StringVar()
@@ -2218,6 +2247,8 @@ class App(tk.Tk):
         self.queue: queue.Queue = queue.Queue()
         self.is_scanning = False
         self.scan_button: ttk.Button | None = None
+        self.update_button: ttk.Button | None = None
+        self.update_check_running = False
         self.total_shows = 0
         self.done_shows = 0
         self._last_context_popup = {"kind": "", "time": 0, "x": 0, "y": 0}
@@ -2230,6 +2261,74 @@ class App(tk.Tk):
     def tr(self, key: str, **kwargs) -> str:
         return translate(key, self.language, **kwargs)
 
+    def version_tuple(self, value: str) -> tuple[int, int, int]:
+        parts = [int(part) for part in re.findall(r"\d+", str(value).lstrip("v"))[:3]]
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts)
+
+    def is_newer_version(self, latest: str, current: str) -> bool:
+        return self.version_tuple(latest) > self.version_tuple(current)
+
+    def open_donate(self):
+        webbrowser.open(PAYPAL_DONATE_URL, new=2)
+
+    def check_for_updates(self):
+        if self.update_check_running:
+            messagebox.showinfo(self.tr("update_in_progress_title"), self.tr("update_in_progress_msg"))
+            return
+        self.update_check_running = True
+        if self.update_button is not None:
+            self.update_button.config(state=tk.DISABLED)
+        self.status_var.set(self.tr("checking_updates"))
+        threading.Thread(target=self.update_worker, daemon=True).start()
+
+    def update_worker(self):
+        release = None
+        error = None
+        try:
+            request = urllib.request.Request(
+                GITHUB_RELEASES_API,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": f"TV-Missing-Checker/{APP_VERSION}",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=8) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if not data.get("draft") and not data.get("prerelease"):
+                release = {
+                    "tag": str(data.get("tag_name", "")).strip(),
+                    "url": data.get("html_url") or GITHUB_RELEASES_URL,
+                }
+        except (OSError, TimeoutError, urllib.error.URLError, ValueError) as exc:
+            error = exc
+
+        try:
+            self.after(0, lambda: self.handle_update_result(release, error))
+        except tk.TclError:
+            pass
+
+    def handle_update_result(self, release: dict | None, error: Exception | None):
+        self.update_check_running = False
+        if self.update_button is not None:
+            self.update_button.config(state=tk.NORMAL)
+        if error is not None or not release or not release.get("tag"):
+            self.status_var.set(self.tr("status_choose_folder"))
+            messagebox.showwarning(self.tr("update_failed_title"), self.tr("update_failed_msg"))
+            return
+
+        latest = release["tag"]
+        if not self.is_newer_version(latest, APP_VERSION):
+            self.status_var.set(self.tr("update_current_msg", current=APP_VERSION))
+            messagebox.showinfo(self.tr("update_current_title"), self.tr("update_current_msg", current=APP_VERSION))
+            return
+
+        self.status_var.set(self.tr("update_available_title"))
+        message = self.tr("update_available_msg", current=APP_VERSION, latest=latest)
+        if messagebox.askyesno(self.tr("update_available_title"), message):
+            webbrowser.open(release["url"], new=2)
+
     def _change_language(self, _event=None):
         new_language = normalize_language(self.language_var.get())
         if new_language == self.language:
@@ -2239,7 +2338,7 @@ class App(tk.Tk):
             self.status_var.set(self.tr("language_locked_scanning"))
             return
         self.language = new_language
-        self.title(self.tr("app_title"))
+        self.title(f"{self.tr('app_title')} v{APP_VERSION}")
         self._save_settings()
         self.status_var.set(self.tr("status_choose_folder"))
         self.progress_label_var.set(self.tr("progress", done=self.done_shows, total=self.total_shows))
@@ -2332,17 +2431,27 @@ class App(tk.Tk):
         header = ttk.Frame(outer, style="Toolbar.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text=self.tr("app_title"), style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(header, text=self.tr("subtitle"), style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
-        ttk.Label(header, text=self.tr("language"), style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 0))
-        language_box = ttk.Combobox(
+        ttk.Label(header, text=f"{self.tr('app_title')} v{APP_VERSION}", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
             header,
+            text=f"{self.tr('version_label', version=APP_VERSION)} | {self.tr('subtitle')}",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        header_tools = ttk.Frame(header, style="Toolbar.TFrame")
+        header_tools.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+        self.update_button = ttk.Button(header_tools, text=self.tr("check_updates"), command=self.check_for_updates, style="Ghost.TButton")
+        self.update_button.grid(row=0, column=0, sticky="e", padx=(0, 8))
+        ttk.Button(header_tools, text=self.tr("donate"), command=self.open_donate, style="Ghost.TButton").grid(row=0, column=1, sticky="e", padx=(0, 12))
+        ttk.Label(header_tools, text=self.tr("language"), style="Muted.TLabel").grid(row=0, column=2, sticky="e")
+        language_box = ttk.Combobox(
+            header_tools,
             textvariable=self.language_var,
             values=[label for _code, label in LANGUAGE_CHOICES],
             state="readonly",
             width=12,
         )
-        language_box.grid(row=1, column=1, sticky="e", padx=(12, 0), pady=(2, 0))
+        language_box.grid(row=1, column=2, sticky="e", pady=(2, 0))
         language_box.bind("<<ComboboxSelected>>", self._change_language)
 
         body = ttk.Frame(outer)
